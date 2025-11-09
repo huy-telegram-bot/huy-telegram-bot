@@ -61,41 +61,54 @@ UID_LIST = load_data()
 # ================== CHECK LIVE DIE (VPS accurate) ==================
 def check_live_vps(uid):
     """
-    Check chính xác giống VPS:
-    - Nếu avatar redirect ra ảnh thật (scontent...)
-    - HOẶC mbasic có tên, nút kết bạn, nút theo dõi, intro, friends, followers
-    => UID LIVE
+    Check chuẩn LIVE/DIE:
+    - LIVE: còn tồn tại + không bị khoá + có avatar thật hoặc có giao diện profile
+    - DIE: Facebook trả về lỗi 'content unavailable' hoặc checkpoint
     """
+
     try:
-        # 1) Avatar redirect check
+        # Avatar Check (NO redirect follow)
         url_ava = f"https://www.facebook.com/{uid}/picture?type=large"
         r = session.get(url_ava, allow_redirects=False, timeout=REQUEST_TIMEOUT)
         loc = r.headers.get("Location", "")
 
-        if "scontent" in loc or "fbcdn" in loc:    # Ảnh thật
-            return "LIVE"
+        has_real_avatar = ("scontent" in loc or "fbcdn" in loc)
 
-        # 2) mbasic check (không cần post)
+        # Request mbasic
         url = f"https://mbasic.facebook.com/{uid}"
-        r = session.get(url, timeout=REQUEST_TIMEOUT)
-        html = r.text.lower()
+        r2 = session.get(url, timeout=REQUEST_TIMEOUT)
+        html = r2.text.lower()
 
-        # LIVE khi có các phần tử sau:
-        live_signals = [
-            "add friend", "kết bạn", "follow", "theo dõi",
-            "intro", "giới thiệu", "followers", "friends"
+        # DIE signature (quan trọng)
+        die_keywords = [
+            "this content isn't available",
+            "nội dung này hiện không khả dụng",
+            "tài khoản hiện không khả dụng",
+            "account disabled",
+            "checkpoint",
+            "unavailable",
+            "not found",
         ]
+        if any(k in html for k in die_keywords):
+            return "DIE"
 
-        if any(sig in html for sig in live_signals):
-            return "LIVE"
+        # LIVE strong signals
+        live_keywords = [
+            "add friend", "kết bạn",
+            "follow", "theo dõi",
+            "intro", "giới thiệu",
+            "friends", "bạn bè",
+            "followers", "người theo dõi",
+        ]
+        has_profile_signals = any(k in html for k in live_keywords)
 
-        # Nếu chứa yêu cầu đăng nhập -> UID vẫn đang tồn tại nhưng private
-        if "login" in html or "đăng nhập" in html:
+        # Avatar OR profile signals => LIVE
+        if has_real_avatar or has_profile_signals:
             return "LIVE"
 
         return "DIE"
 
-    except Exception:
+    except:
         return "DIE"
 
 
