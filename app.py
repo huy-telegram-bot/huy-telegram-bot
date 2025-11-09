@@ -72,6 +72,38 @@ def check_avatar(uid):
         return False
     except:
         return False
+FB_COOKIE = os.getenv("FB_COOKIE", "")  # cookie lấy từ trình duyệt FB
+
+headers = {
+    "User-Agent": "Mozilla/5.0",
+    "Cookie": FB_COOKIE
+}
+
+def check_live(uid):
+    try:
+        # STEP 1: check avatar redirect (không follow)
+        avatar = f"https://www.facebook.com/{uid}/picture?type=large"
+        r = requests.get(avatar, headers=headers, allow_redirects=False, timeout=10)
+
+        loc = r.headers.get("Location", "")
+
+        if "scontent" in loc:
+            return "LIVE"
+
+        if "safe_image" in loc or "checkpoint" in loc:
+            return "DIE"
+
+        # STEP 2: check mbasic (phải có cookie FB mới xem được)
+        mbasic = f"https://mbasic.facebook.com/{uid}"
+        r2 = requests.get(mbasic, headers=headers, timeout=10).text.lower()
+
+        keywords = ["đã đăng", "giờ trước", "phút trước", "just now", "minutes ago"]
+        if any(k in r2 for k in keywords):
+            return "LIVE"
+
+        return "DIE"
+    except:
+        return "DIE"
 
 def check_post(uid):
     """
