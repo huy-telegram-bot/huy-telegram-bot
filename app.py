@@ -100,10 +100,41 @@ def check_post(uid):
 
 
 def check_live_vps(uid):
-    """ ✅ Nếu avatar LIVE hoặc có bài viết → LIVE """
-    if check_avatar(uid) or check_post(uid):
-        return "LIVE"
-    return "DIE"
+    try:
+        # 1. CHECK AVATAR REDIRECT
+        r = session.get(
+            f"https://www.facebook.com/{uid}/picture?type=large",
+            allow_redirects=False,
+            timeout=REQUEST_TIMEOUT
+        )
+        loc = r.headers.get("Location", "")
+
+        if ("scontent" in loc or "fbcdn" in loc) and "safe_image" not in loc:
+            return "LIVE"
+
+        # 2. CHECK MBASIC (cover + name)
+        r2 = session.get(f"https://mbasic.facebook.com/{uid}", timeout=REQUEST_TIMEOUT)
+        html = r2.text.lower()
+
+        live_keywords = [
+            "đã đăng", "giờ trước", "phút trước", "just now",
+            "minutes ago", "hours ago", "chia sẻ", "shared"
+        ]
+
+        # Nếu mbasic load được trang có avatar / cover
+        if "cover" in html or "timeline" in html:
+            # Nếu có bài viết → LIVE
+            for k in live_keywords:
+                if k in html:
+                    return "LIVE"
+            # Nếu có thông tin trang cá nhân nhưng chưa có bài
+            return "LIVE"
+
+        return "DIE"
+
+    except:
+        return "DIE"
+
 
 
 # -------------------- AUTO CHECK BACKGROUND --------------------
