@@ -213,6 +213,15 @@ def flow_handler(m):
 # ================= RUN =================
 if __name__ == "__main__":
     threading.Thread(target=worker, daemon=True).start()
-    wh_url = (os.getenv("RENDER_EXTERNAL_URL") or "") + f"/webhook/{TELEGRAM_TOKEN}"
-    requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook", params={"url": wh_url})
+
+    # Set webhook theo URL thật của Render.com
+    service_url = f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com"
+    webhook_url = f"{service_url}/webhook/{TELEGRAM_TOKEN}"
+    requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}")
+
+    print("BOT RUNNING ✅")
+    bot.remove_webhook()
+    bot.set_webhook(url=webhook_url)
+
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+
