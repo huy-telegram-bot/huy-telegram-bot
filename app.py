@@ -69,82 +69,58 @@ def main_menu():
     return kb
 
 # -------------------- FACEBOOK CHECK (no token) --------------------
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+# ========== FACEBOOK CHECK IMPROVED (100% giống VPS) ==========
 
-def check_avatar_redirect(uid):
+def check_avatar(uid):
     """
-    Request facebook profile picture URL (no redirect) by hitting the direct picture URL
-    and inspecting redirect Location or content. Returns True if looks like a real avatar.
+    Check avatar bằng cách đọc header Location và content-type
+    - Nếu redirect tới scontent hoặc ảnh CDN => LIVE
+    - Nếu trả về login / safe_image => chưa chắc DIE, cần kiểm tra thêm
     """
     try:
-        url = f"https://www.facebook.com/{uid}/picture?type=large"
-        # do not follow redirects: we want to inspect the Location header
-        r = session.get(url, allow_redirects=False, timeout=REQUEST_TIMEOUT)
-        # If redirect (302) to scontent/... it's likely a real avatar
-        if r.status_code in (301, 302):
-            loc = r.headers.get("Location", "")
-            if loc and ("scontent" in loc or "cdn" in loc):
-                return True
-            # sometimes redirect to safe_image or missing => treat as DIE
-            return False
-        # If status 200, check content for typical placeholders or login page
-        if r.status_code == 200:
-            txt = r.text[:500].lower()
-            # if the content contains login or checkpoint, it's not a valid public avatar
-            if "checkpoint" in txt or "facebook" in txt and ("login" in txt or "create a page" in txt):
-                return False
-            # content might be an image binary; treat as LIVE
-            # try to detect if response is binary by headers
-            ctype = r.headers.get("Content-Type", "")
-            if "image" in ctype:
-                return True
-            # fallback: if length > small threshold
-            if len(r.content) > 1000:
-                return True
+        url = f"https://graph.facebook.com/{uid}/picture?type=large&redirect=0"
+        r = requests.get(url, timeout=8).json()
+
+        if r.get("data", {}).get("is_silhouette") is False:
+            return True
+
+        link = r.get("data", {}).get("url", "")
+        if "scontent" in link:
+            return True
+
         return False
-    except Exception:
+    except:
         return False
 
-def check_mbasic_posts(uid):
+
+def check_post(uid):
     """
-    Scrape mbasic.facebook.com/{uid} and search for recent-post keywords.
-    Returns True if there are recent posts or visible timeline.
+    Check bài viết thật giống VPS
+    - Check mbasic.facebook.com/{uid}/v2.3/posts
+    - Có từ khóa thời gian => LIVE
     """
     try:
-        url = f"https://mbasic.facebook.com/{uid}"
-        r = session.get(url, timeout=REQUEST_TIMEOUT)
-        if r.status_code != 200:
-            return False
-        txt = r.text
-        # common indicators of activity
-        keywords = ["đã đăng", "giờ trước", "phút trước", "vừa xong", "just now",
-                    "hours ago", "minutes ago", "shared a post", "chia sẻ", "featuring"]
-        lower = txt.lower()
-        for k in keywords:
-            if k in lower:
-                return True
-        # if page shows profile name and posts area, consider LIVE; check for "Contact" or "Info" patterns:
-        if "profile.php" in url or "timeline" in lower or ("pagelet_timeline" in lower):
-            # conservative: assume DIE unless we saw activity keywords
-            return False
+        url = f"https://mbasic.facebook.com/{uid}/v2.3/posts"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8).text.lower()
+
+        keywords = ["đã đăng", "phút trước", "giờ trước", "just now", "minutes ago", "hours ago"]
+
+        return any(k in r for k in keywords)
+
+    except:
         return False
-    except Exception:
-        return False
+
 
 def check_live_vps(uid):
     """
-    Combined check: avatar redirect OR recent posts => LIVE, else DIE.
-    Resilient: prefer avatar check first.
+    Tổng hợp: avatar + bài đăng
+    - Avatar hoặc bài viết => LIVE
+    - Không thì DIE
     """
-    try:
-        if check_avatar_redirect(uid):
-            return "LIVE"
-        if check_mbasic_posts(uid):
-            return "LIVE"
-        return "DIE"
-    except Exception:
-        return "DIE"
+    if check_avatar(uid) or check_post(uid):
+        return "LIVE"
+    return "DIE"
+
 
 # -------------------- AUTO-CHECK WORKER --------------------
 worker_lock = threading.Lock()
