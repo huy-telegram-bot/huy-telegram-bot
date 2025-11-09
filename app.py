@@ -1,118 +1,81 @@
-# ===============================================================
-# ✅ Telegram Bot Auto Check Facebook UID (LIVE/DIE)
-# ✅ Không dùng Facebook Graph API
-# ✅ Check bằng avatar redirect + mbasic (giống VPS 100%)
-# ✅ Auto check mỗi 30s, notify nếu UID đổi trạng thái
-# ✅ Lưu UID vào JSON tại /tmp (Render hosting hỗ trợ)
-# ===============================================================
+# =========================================================
+# ==========  TELEGRAM BOT CHECK UID LIVE / DIE  ==========
+# ==========    By Huy — VPS accuracy version    ==========
+# =========================================================
 
 import os
 import json
-import time
-import threading
 import re
+import time
+import random
+import threading
 import requests
 from flask import Flask, request
-
 from telebot import TeleBot, types
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
-# -------------------- CONFIG --------------------
+# ================= CONFIG — BẮT BUỘC =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0") or 0)
+
+# Render hosting: phải có tên service → auto set webhook
 RENDER_SERVICE_NAME = os.getenv("RENDER_SERVICE_NAME", "").strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 
 PORT = int(os.getenv("PORT", "10000"))
+
+# nơi lưu file JSON (Render cho phép /tmp)
 DATA_FILE = "/tmp/uid_data.json"
 
-CHECK_INTERVAL = 30          # Auto check mỗi 30s
-REQUEST_TIMEOUT = 8          # Timeout check UID
-MIN_DELAY_PER_UID = 0.10     # Delay tối thiểu mỗi UID
-MAX_DELAY_PER_UID = 0.5      # Delay tối đa mỗi UID
+# AUTO CHECK CONFIG
+CHECK_INTERVAL = 30
+REQUEST_TIMEOUT = 8
 
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("❌ TELEGRAM_TOKEN chưa được set trong Environment Variables.")
+# ======================================================
+if TELEGRAM_TOKEN == "":
+    raise RuntimeError("❌ TELEGRAM_TOKEN không được để trống!")
 
-# -------------------- JSON STORAGE --------------------
+session = requests.Session()
+session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124"})
+
+
+# ================= DATA MANAGER ======================
 def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {}
     try:
-        if not os.path.exists(DATA_FILE):
-            return {}
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
         return {}
 
-def save_data(data):
-    try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except:
-        pass
+
+def save_data(d):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+
 
 UID_LIST = load_data()
 
-# -------------------- TELEGRAM BOT --------------------
-bot = TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
-app = Flask(__name__)
 
-def menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(
-        KeyboardButton("/save"), KeyboardButton("/list"),
-        KeyboardButton("/check"), KeyboardButton("/checkdie"),
-        KeyboardButton("/delete"), KeyboardButton("/deleteall"),
-        KeyboardButton("/layanh"), KeyboardButton("/info")
-    )
-    return kb
-
-# -------------------- CHECK UID (CHUẨN VPS) --------------------
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0"})
-
-def check_avatar(uid):
-    try:
-        r = session.get(
-            f"https://www.facebook.com/{uid}/picture?type=large",
-            allow_redirects=False, timeout=REQUEST_TIMEOUT
-        )
-        loc = r.headers.get("Location", "")
-
-        if "scontent" in loc or "cdn" in loc:
-            return True  # LIVE avatar
-
-        return False
-    except:
-        return False
-
-
-def check_post(uid):
-    try:
-        r = session.get(f"https://mbasic.facebook.com/{uid}", timeout=REQUEST_TIMEOUT)
-        html = r.text.lower()
-
-        keywords = ["vừa xong", "giờ trước", "phút trước", "just now", "minutes ago", "hours ago"]
-
-        return any(k in html for k in keywords)
-    except:
-        return False
-
-
+# ================== CHECK LIVE DIE (VPS accurate) ==================
 def check_live_vps(uid):
+    """ Check Facebook UID LIVE/DIE — giống VPS """
+
     try:
-        # 1. CHECK AVATAR REDIRECT
+        # 1. Avatar redirect (nếu về CDN scontent → LIVE)
         r = session.get(
             f"https://www.facebook.com/{uid}/picture?type=large",
             allow_redirects=False,
-            timeout=REQUEST_TIMEOUT
+            timeout=REQUEST_TIMEOUT,
         )
+
         loc = r.headers.get("Location", "")
 
         if ("scontent" in loc or "fbcdn" in loc) and "safe_image" not in loc:
             return "LIVE"
 
-        # 2. CHECK MBASIC (cover + name)
+        # 2. Check mbasic (timeline/profile info)
         r2 = session.get(f"https://mbasic.facebook.com/{uid}", timeout=REQUEST_TIMEOUT)
         html = r2.text.lower()
 
@@ -121,13 +84,11 @@ def check_live_vps(uid):
             "minutes ago", "hours ago", "chia sẻ", "shared"
         ]
 
-        # Nếu mbasic load được trang có avatar / cover
-        if "cover" in html or "timeline" in html:
-            # Nếu có bài viết → LIVE
-            for k in live_keywords:
-                if k in html:
-                    return "LIVE"
-            # Nếu có thông tin trang cá nhân nhưng chưa có bài
+        if any(k in html for k in live_keywords):
+            return "LIVE"
+
+        # nếu có avatar/cover loaded nghĩa là tài khoản vẫn tồn tại
+        if "cover" in html or "add friend" in html or "followers" in html:
             return "LIVE"
 
         return "DIE"
@@ -136,57 +97,61 @@ def check_live_vps(uid):
         return "DIE"
 
 
+# ================= TELEGRAM BOT SETUP ==================
 
-# -------------------- AUTO CHECK BACKGROUND --------------------
-def notify_change(uid, old, new, name):
-    bot.send_message(
-        ADMIN_CHAT_ID,
-        f"🔔 <b>UID thay đổi trạng thái</b>\n"
-        f"👤 UID: <code>{uid}</code>\n"
-        f"📝 Tên: {name}\n"
-        f"🔁 <b>{old} → {new}</b>"
+bot = TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
+app = Flask(__name__)
+
+
+def main_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(
+        KeyboardButton("/save"), KeyboardButton("/check"),
+        KeyboardButton("/list"), KeyboardButton("/checkdie"),
+        KeyboardButton("/delete"), KeyboardButton("/layanh"),
+        KeyboardButton("/info"), KeyboardButton("/deleteall")
     )
+    return kb
 
 
-def auto_checker():
-    while True:
-        data = load_data()
-        if not data:
-            time.sleep(10)
-            continue
+# ============= COMMAND HANDLER ========================
 
-        delay = max(MIN_DELAY_PER_UID, min(MAX_DELAY_PER_UID, CHECK_INTERVAL / len(data)))
-
-        for uid, meta in list(data.items()):
-            new = check_live_vps(uid)
-            old = meta.get("status", "DIE")
-
-            meta["last_check"] = int(time.time())
-
-            if new != old:
-                meta["status"] = new
-                save_data(data)
-                notify_change(uid, old, new, meta.get("name", "-"))
-
-            time.sleep(delay)
-
-        save_data(data)
-
-
-# -------------------- COMMAND HANDLERS --------------------
-user_flow = {}
-
-@bot.message_handler(commands=['start'])
-def start(m):
+@bot.message_handler(commands=["start"])
+def cmd_start(m):
     if m.chat.id != ADMIN_CHAT_ID:
-        return bot.send_message(m.chat.id, "❌ Không có quyền sử dụng bot này.")
-    bot.send_message(m.chat.id, "✅ BOT đã sẵn sàng!", reply_markup=menu())
+        return bot.send_message(m.chat.id, "❌ Bạn không có quyền sử dụng BOT này.")
+
+    bot.send_message(m.chat.id, "✅ BOT đã sẵn sàng!", reply_markup=main_menu())
 
 
-@bot.message_handler(commands=['save'])
-def save(m):
+@bot.message_handler(commands=["help"])
+def cmd_help(m):
+    help_msg = """
+<b>📌 Hướng dẫn sử dụng:</b>
+-----------------------------------
+/save → Lưu UID
+/list → Xem danh sách UID
+/check → Check tất cả UID ngay
+/checkdie <uid> → Check UID nhanh
+/delete <uid> → Xóa UID
+/deleteall → Xóa toàn bộ UID
+/layanh <uid> → Lấy avatar + cover
+/info <uid> → Lấy thông tin đơn giản
+-----------------------------------
+👑 Auto-check mỗi 30 giây
+"""
+    bot.send_message(m.chat.id, help_msg)
+
+
+# ================= SAVE UID FLOW ==================
+
+user_flow = {}  # lưu step nhập
+
+
+@bot.message_handler(commands=["save"])
+def cmd_save(m):
     if m.chat.id != ADMIN_CHAT_ID:
-        return
+        return bot.send_message(m.chat.id, "❌ Không có quyền!")
 
     user_flow[m.chat.id] = {"step": 1}
     bot.send_message(m.chat.id, "🔵 Gửi UID hoặc link Facebook:")
@@ -194,38 +159,37 @@ def save(m):
 
 @bot.message_handler(func=lambda m: m.chat.id in user_flow)
 def save_flow(m):
-    flow = user_flow[m.chat.id]
-    step = flow["step"]
+    chat = m.chat.id
+    step = user_flow[chat]["step"]
+    text = m.text.strip()
 
     if step == 1:
-        t = m.text.strip()
         uid = None
 
-        if t.isdigit():
-            uid = t
+        if text.isdigit():
+            uid = text
         else:
-            match = re.search(r"(?:profile\.php\?id=)?([0-9]{6,})", t)
+            match = re.search(r"([0-9]{6,})", text)
             if match:
                 uid = match.group(1)
 
         if not uid:
-            user_flow.pop(m.chat.id)
-            return bot.send_message(m.chat.id, "❌ UID không hợp lệ, thử lại.")
+            user_flow.pop(chat, None)
+            return bot.send_message(chat, "❌ UID không hợp lệ. Gửi lại.")
 
-        flow["uid"] = uid
-        flow["step"] = 2
-        bot.send_message(m.chat.id, "🔵 Nhập tên hiển thị:")
-        return
+        user_flow[chat]["uid"] = uid
+        user_flow[chat]["step"] = 2
+        return bot.send_message(chat, "✏ Nhập tên gợi nhớ:")
 
-    if step == 2:
-        flow["name"] = m.text
-        flow["step"] = 3
-        return bot.send_message(m.chat.id, "🔵 Nhập ghi chú (note):")
+    elif step == 2:
+        user_flow[chat]["name"] = text
+        user_flow[chat]["step"] = 3
+        return bot.send_message(chat, "🟣 Nhập ghi chú (note):")
 
-    if step == 3:
-        uid = flow["uid"]
-        name = flow["name"]
-        note = m.text
+    elif step == 3:
+        uid = user_flow[chat]["uid"]
+        name = user_flow[chat]["name"]
+        note = text
 
         status = check_live_vps(uid)
 
@@ -235,119 +199,171 @@ def save_flow(m):
             "status": status,
             "last_check": int(time.time())
         }
+
         save_data(UID_LIST)
-        user_flow.pop(m.chat.id)
+        user_flow.pop(chat, None)
 
-        bot.send_message(m.chat.id, f"✅ Lưu UID <b>{uid}</b> — Trạng thái: <b>{status}</b>")
+        return bot.send_message(chat, f"✅ Đã lưu UID <b>{uid}</b>\n🌍 Trạng thái: <b>{status}</b>")
 
 
-@bot.message_handler(commands=['list'])
-def list_uid(m):
-    if m.chat.id != ADMIN_CHAT_ID: return
+# ================= LIST + DELETE ==================
+
+@bot.message_handler(commands=["list"])
+def cmd_list(m):
+    if m.chat.id != ADMIN_CHAT_ID:
+        return
 
     if not UID_LIST:
-        return bot.send_message(m.chat.id, "⚠️ Chưa có UID nào.")
+        return bot.send_message(m.chat.id, "📭 Danh sách rỗng.")
 
-    msg = "<b>📋 DANH SÁCH UID:</b>\n"
-    for uid, meta in UID_LIST.items():
-        msg += f"• <b>{uid}</b> — {meta['name']} — {meta['status']}\n"
+    msg = "<b>📌 UID đã lưu:</b>\n"
+    for uid, info in UID_LIST.items():
+        msg += f"• <b>{uid}</b> - {info['name']} ({info['status']})\n"
 
     bot.send_message(m.chat.id, msg)
 
 
-@bot.message_handler(commands=['delete'])
-def delete_uid(m):
-    if m.chat.id != ADMIN_CHAT_ID: return
-    uid = m.text.replace("/delete", "").strip()
+@bot.message_handler(commands=["delete"])
+def cmd_delete(m):
+    if m.chat.id != ADMIN_CHAT_ID:
+        return
 
+    sp = m.text.split()
+    if len(sp) < 2:
+        return bot.send_message(m.chat.id, "❗ Dùng: /delete <uid>")
+
+    uid = sp[1]
     if uid in UID_LIST:
-        del UID_LIST[uid]
+        UID_LIST.pop(uid)
         save_data(UID_LIST)
-        bot.send_message(m.chat.id, f"✅ Đã xóa UID {uid}")
+        bot.send_message(m.chat.id, f"✅ Đã xóa UID: {uid}")
     else:
-        bot.send_message(m.chat.id, "❌ UID không tồn tại")
+        bot.send_message(m.chat.id, "❌ UID không tồn tại!")
 
 
-@bot.message_handler(commands=['deleteall'])
-def delete_all(m):
-    if m.chat.id != ADMIN_CHAT_ID: return
+@bot.message_handler(commands=["deleteall"])
+def cmd_delete_all(m):
+    if m.chat.id != ADMIN_CHAT_ID:
+        return
+
     UID_LIST.clear()
-    save_data({})
+    save_data(UID_LIST)
     bot.send_message(m.chat.id, "✅ Đã xóa toàn bộ UID")
 
 
-@bot.message_handler(commands=['check'])
-def check_all(m):
-    if m.chat.id != ADMIN_CHAT_ID: return
+# ================= MANUAL CHECK ==================
 
-    msg = "🔍 <b>KẾT QUẢ CHECK:</b>\n"
+@bot.message_handler(commands=["check"])
+def cmd_check_all(m):
+    if m.chat.id != ADMIN_CHAT_ID:
+        return
 
+    if not UID_LIST:
+        return bot.send_message(m.chat.id, "📭 Không có UID nào.")
+
+    msg = "<b>🔍 Kết quả check:</b>\n"
     for uid in UID_LIST:
         st = check_live_vps(uid)
         UID_LIST[uid]["status"] = st
+        UID_LIST[uid]["last_check"] = int(time.time())
         msg += f"{uid} → <b>{st}</b>\n"
-        time.sleep(0.1)
+        time.sleep(0.15)
 
     save_data(UID_LIST)
     bot.send_message(m.chat.id, msg)
 
 
-@bot.message_handler(commands=['checkdie'])
-def check_die(m):
-    if m.chat.id != ADMIN_CHAT_ID: return
+@bot.message_handler(commands=["checkdie"])
+def cmd_checkdie(m):
+    if m.chat.id != ADMIN_CHAT_ID:
+        return
 
     sp = m.text.split()
-    msg = ""
+    if len(sp) < 2:
+        return bot.send_message(m.chat.id, "❗ Dùng: /checkdie <uid>")
 
-    for uid in sp[1:]:
-        msg += f"{uid} → {check_live_vps(uid)}\n"
-
-    bot.send_message(m.chat.id, msg)
-
-
-@bot.message_handler(commands=['layanh'])
-def layanh(m):
-    if m.chat.id != ADMIN_CHAT_ID: return
-    uid = m.text.split()[1]
-
-    r = session.get(
-        f"https://www.facebook.com/{uid}/picture?type=large",
-        allow_redirects=False,
-        timeout=REQUEST_TIMEOUT
-    )
-    loc = r.headers.get("Location", "")
-    bot.send_message(m.chat.id, f"📷 {loc}")
+    out = "\n".join(f"{uid} → {check_live_vps(uid)}" for uid in sp[1:])
+    bot.send_message(m.chat.id, out)
 
 
-@bot.message_handler(commands=['info'])
-def info(m):
-    if m.chat.id != ADMIN_CHAT_ID: return
-    uid = m.text.split()[1]
-    bot.send_message(m.chat.id, f"https://facebook.com/{uid}")
+# ================= LẤY ẢNH (avatar + cover) ==================
+
+@bot.message_handler(commands=["layanh"])
+def cmd_layanh(m):
+    if m.chat.id != ADMIN_CHAT_ID:
+        return
+
+    sp = m.text.split()
+    if len(sp) < 2:
+        return bot.send_message(m.chat.id, "❗ Dùng: /layanh <uid>")
+
+    uid = sp[1]
+
+    avatar_url = f"https://www.facebook.com/{uid}/picture?type=large"
+    bot.send_message(m.chat.id, f"📷 Avatar: {avatar_url}")
+
+    try:
+        r = session.get(f"https://mbasic.facebook.com/{uid}", timeout=REQUEST_TIMEOUT)
+        m_cover = re.search(r'https?://[^"]*cover[^"]*', r.text)
+        if m_cover:
+            bot.send_message(m.chat.id, f"🖼 Cover: {m_cover.group(0)}")
+    except:
+        pass
 
 
-# -------------------- WEBHOOK --------------------
+# ================= AUTO CHECK BACKGROUND ==================
+
+def auto_checker():
+    while True:
+        if UID_LIST:
+            for uid, info in UID_LIST.items():
+                old = info["status"]
+                new = check_live_vps(uid)
+
+                UID_LIST[uid]["last_check"] = int(time.time())
+
+                if old != new:
+                    UID_LIST[uid]["status"] = new
+                    UID_LIST[uid]["last_change"] = int(time.time())
+                    save_data(UID_LIST)
+
+                    bot.send_message(
+                        ADMIN_CHAT_ID,
+                        f"🔔 UID thay đổi trạng thái!\n<b>{uid}</b>\n{old} → {new}"
+                    )
+
+                time.sleep(random.uniform(0.25, 0.6))  # tránh FB block
+
+            save_data(UID_LIST)
+
+        time.sleep(CHECK_INTERVAL)
+
+
+# START BACKGROUND THREAD
+threading.Thread(target=auto_checker, daemon=True).start()
+
+
+# ================= WEBHOOK SETUP ==================
+
 @app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
-def webhook():
-    bot.process_new_updates([types.Update.de_json(request.get_json())])
+def telegram_webhook():
+    update = request.get_json()
+    bot.process_new_updates([types.Update.de_json(update)])
     return "OK", 200
 
 
 def ensure_webhook():
-    url = (
-        WEBHOOK_URL.rstrip("/")
-        if WEBHOOK_URL
-        else f"https://{RENDER_SERVICE_NAME}.onrender.com"
-    ) + f"/webhook/{TELEGRAM_TOKEN}"
+    if WEBHOOK_URL:
+        url = WEBHOOK_URL
+    else:
+        url = f"https://{RENDER_SERVICE_NAME}.onrender.com"
 
-    cur = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getWebhookInfo").json()
-    if cur.get("result", {}).get("url") != url:
-        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={url}")
+    full = f"{url}/webhook/{TELEGRAM_TOKEN}"
+    requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={full}")
+    print("✅ Webhook set:", full)
 
 
-# -------------------- RUN --------------------
 if __name__ == "__main__":
-    print("🚀 BOT STARTED — AUTO CHECK EVERY 30s")
-    threading.Thread(target=auto_checker, daemon=True).start()
     ensure_webhook()
+    print("🚀 Bot started — Webhook ACTIVE")
     app.run(host="0.0.0.0", port=PORT)
