@@ -212,16 +212,22 @@ def flow_handler(m):
 
 # ================= RUN =================
 if __name__ == "__main__":
+    print("✅ Starting BOT...")
+
     threading.Thread(target=worker, daemon=True).start()
 
-    # Set webhook theo URL thật của Render.com
     service_url = f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com"
     webhook_url = f"{service_url}/webhook/{TELEGRAM_TOKEN}"
-    requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}")
 
-    print("BOT RUNNING ✅")
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
+    # ==== CHỐNG LỖI 429 - CHỈ SET WEBHOOK KHI CẦN ====
+    current = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getWebhookInfo").json()
+    if current.get("result", {}).get("url") != webhook_url:
+        print("🔧 Setting new webhook...")
+        bot.remove_webhook()
+        bot.set_webhook(url=webhook_url)
+    else:
+        print("✅ Webhook already set, skip update")
 
+    print(f"🚀 BOT RUNNING | Webhook: {webhook_url}")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
 
