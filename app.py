@@ -60,41 +60,44 @@ UID_LIST = load_data()
 
 # ================== CHECK LIVE DIE (VPS accurate) ==================
 def check_live_vps(uid):
-    """ Check Facebook UID LIVE/DIE — giống VPS """
-
+    """
+    Check chính xác giống VPS:
+    - Nếu avatar redirect ra ảnh thật (scontent...)
+    - HOẶC mbasic có tên, nút kết bạn, nút theo dõi, intro, friends, followers
+    => UID LIVE
+    """
     try:
-        # 1. Avatar redirect (nếu về CDN scontent → LIVE)
-        r = session.get(
-            f"https://www.facebook.com/{uid}/picture?type=large",
-            allow_redirects=False,
-            timeout=REQUEST_TIMEOUT,
-        )
-
+        # 1) Avatar redirect check
+        url_ava = f"https://www.facebook.com/{uid}/picture?type=large"
+        r = session.get(url_ava, allow_redirects=False, timeout=REQUEST_TIMEOUT)
         loc = r.headers.get("Location", "")
 
-        if ("scontent" in loc or "fbcdn" in loc) and "safe_image" not in loc:
+        if "scontent" in loc or "fbcdn" in loc:    # Ảnh thật
             return "LIVE"
 
-        # 2. Check mbasic (timeline/profile info)
-        r2 = session.get(f"https://mbasic.facebook.com/{uid}", timeout=REQUEST_TIMEOUT)
-        html = r2.text.lower()
+        # 2) mbasic check (không cần post)
+        url = f"https://mbasic.facebook.com/{uid}"
+        r = session.get(url, timeout=REQUEST_TIMEOUT)
+        html = r.text.lower()
 
-        live_keywords = [
-            "đã đăng", "giờ trước", "phút trước", "just now",
-            "minutes ago", "hours ago", "chia sẻ", "shared"
+        # LIVE khi có các phần tử sau:
+        live_signals = [
+            "add friend", "kết bạn", "follow", "theo dõi",
+            "intro", "giới thiệu", "followers", "friends"
         ]
 
-        if any(k in html for k in live_keywords):
+        if any(sig in html for sig in live_signals):
             return "LIVE"
 
-        # nếu có avatar/cover loaded nghĩa là tài khoản vẫn tồn tại
-        if "cover" in html or "add friend" in html or "followers" in html:
+        # Nếu chứa yêu cầu đăng nhập -> UID vẫn đang tồn tại nhưng private
+        if "login" in html or "đăng nhập" in html:
             return "LIVE"
 
         return "DIE"
 
-    except:
+    except Exception:
         return "DIE"
+
 
 
 # ================= TELEGRAM BOT SETUP ==================
